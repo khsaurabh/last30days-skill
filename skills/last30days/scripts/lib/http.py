@@ -37,6 +37,27 @@ RETRY_DELAY = 2.0
 MIN_DNS_RETRIES = 3
 USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 
+# urllib copies almost all headers across 3xx; strip credentials when netloc changes (#1062).
+_CROSS_ORIGIN_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-csrf-token"})
+
+
+class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        if urlsplit(req.full_url).netloc.lower() != urlsplit(new.full_url).netloc.lower():
+            for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
+                if not store:
+                    continue
+                for name in list(store):
+                    if name.lower() in _CROSS_ORIGIN_AUTH_HEADERS:
+                        del store[name]
+        return new
+
+
+_opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect)
+
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_failure_sink",
     default=None,
@@ -655,7 +676,7 @@ def request(
         return True
 
     def open_and_read(request_timeout: float) -> tuple[int, str]:
-        with urllib.request.urlopen(req, timeout=request_timeout) as response:
+        with _opener.open(req, timeout=request_timeout) as response:
             return response.status, response.read().decode('utf-8')
 
     def open_and_read_before_deadline(
