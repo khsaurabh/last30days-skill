@@ -43,9 +43,19 @@ _CROSS_ORIGIN_AUTH_HEADERS = frozenset(
 )
 
 
-def _request_origin(url: str) -> tuple[str, str]:
+def _request_origin(url: str) -> tuple[str, str, int]:
     parts = urlsplit(url)
-    return parts.scheme.lower(), parts.netloc.lower()
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if parts.port is not None:
+        port = parts.port
+    elif scheme == "https":
+        port = 443
+    elif scheme == "http":
+        port = 80
+    else:
+        port = 0
+    return scheme, host, port
 
 
 class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):

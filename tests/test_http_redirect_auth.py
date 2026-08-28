@@ -135,3 +135,21 @@ def test_http_to_https_same_host_strips_credentials():
         {"Authorization": "Bearer SECRET"},
     )
     assert "authorization" not in headers
+
+
+def test_implicit_https_port_keeps_credentials():
+    headers = _redirected_headers(
+        "https://api.example.com/v1",
+        "https://api.example.com:443/v1",
+        {"Authorization": "Bearer KEEP"},
+    )
+    assert headers.get("authorization") == "Bearer KEEP"
+
+
+def test_non_default_https_port_strips_credentials():
+    headers = _redirected_headers(
+        "https://api.example.com/v1",
+        "https://api.example.com:8443/v1",
+        {"Authorization": "Bearer SECRET"},
+    )
+    assert "authorization" not in headers
