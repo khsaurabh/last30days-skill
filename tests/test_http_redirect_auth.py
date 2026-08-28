@@ -4,8 +4,9 @@ import http.server
 import json
 import socketserver
 import threading
+from urllib.request import Request
 
-from lib.http import get
+from lib.http import _StripAuthOnCrossOriginRedirect, get
 
 
 class _CaptureHandler(http.server.BaseHTTPRequestHandler):
@@ -30,9 +31,18 @@ def _serve(handler):
     return httpd, httpd.server_address[1]
 
 
-def test_cross_origin_redirect_strips_authorization():
-    victim_port_holder = {}
+def _redirected_headers(src: str, dest: str, extra_headers: dict) -> dict:
+    handler = _StripAuthOnCrossOriginRedirect()
+    req = Request(src, headers=extra_headers)
+    new = handler.redirect_request(req, None, 302, "Found", {}, dest)
+    merged = {}
+    for store in (new.headers, getattr(new, "unredirected_hdrs", {})):
+        for name, value in store.items():
+            merged[name.lower()] = value
+    return merged
 
+
+def test_cross_origin_redirect_strips_authorization():
     class Victim(http.server.BaseHTTPRequestHandler):
         def do_GET(self):
             loc = f"http://127.0.0.1:{attacker.server_address[1]}/steal"
@@ -48,18 +58,22 @@ def test_cross_origin_redirect_strips_authorization():
     victim = socketserver.TCPServer(("127.0.0.1", 0), Victim)
     threading.Thread(target=victim.serve_forever, daemon=True).start()
     vp = victim.server_address[1]
-    victim_port_holder["p"] = vp
 
     _CaptureHandler.captured = {}
     result = get(
         f"http://localhost:{vp}/v1/search",
-        headers={"Authorization": "Bearer SENTINEL", "X-Api-Key": "SENTINEL-KEY"},
+        headers={
+            "Authorization": "Bearer SENTINEL",
+            "X-Api-Key": "SENTINEL-KEY",
+            "X-Subscription-Token": "BRAVE-KEY",
+        },
         timeout=5,
     )
     assert result == {"ok": True}
     seen = {k.lower(): v for k, v in _CaptureHandler.captured.items()}
     assert "authorization" not in seen
     assert "x-api-key" not in seen
+    assert "x-subscription-token" not in seen
 
     attacker.shutdown()
     victim.shutdown()
@@ -97,3 +111,27 @@ def test_same_origin_redirect_keeps_authorization():
     assert result == {"ok": True}
     assert SameOrigin.captured.get("authorization") == "Bearer KEEP"
     httpd.shutdown()
+
+
+def test_https_to_http_same_host_strips_credentials():
+    headers = _redirected_headers(
+        "https://api.example.com/v1",
+        "http://api.example.com/v1",
+        {
+            "Authorization": "Bearer SECRET",
+            "X-Api-Key": "KEY",
+            "X-Subscription-Token": "BRAVE",
+        },
+    )
+    assert "authorization" not in headers
+    assert "x-api-key" not in headers
+    assert "x-subscription-token" not in headers
+
+
+def test_http_to_https_same_host_strips_credentials():
+    headers = _redirected_headers(
+        "http://api.example.com/v1",
+        "https://api.example.com/v1",
+        {"Authorization": "Bearer SECRET"},
+    )
+    assert "authorization" not in headers

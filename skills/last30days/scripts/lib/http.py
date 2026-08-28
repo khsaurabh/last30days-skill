@@ -37,8 +37,15 @@ RETRY_DELAY = 2.0
 MIN_DNS_RETRIES = 3
 USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 
-# urllib copies almost all headers across 3xx; strip credentials when netloc changes (#1062).
-_CROSS_ORIGIN_AUTH_HEADERS = frozenset({"authorization", "x-api-key", "x-csrf-token"})
+# urllib copies almost all headers across 3xx; strip credentials when origin changes (#1062).
+_CROSS_ORIGIN_AUTH_HEADERS = frozenset(
+    {"authorization", "x-api-key", "x-csrf-token", "x-subscription-token"}
+)
+
+
+def _request_origin(url: str) -> tuple[str, str]:
+    parts = urlsplit(url)
+    return parts.scheme.lower(), parts.netloc.lower()
 
 
 class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
@@ -46,7 +53,7 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
         new = super().redirect_request(req, fp, code, msg, headers, newurl)
         if new is None:
             return None
-        if urlsplit(req.full_url).netloc.lower() != urlsplit(new.full_url).netloc.lower():
+        if _request_origin(req.full_url) != _request_origin(new.full_url):
             for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
                 if not store:
                     continue
@@ -57,6 +64,15 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect)
+_DEFAULT_URLOPEN = urllib.request.urlopen
+
+
+def _open_request(req, timeout):
+    """Honor test patches of urllib.request.urlopen; otherwise use the strip opener."""
+    current = urllib.request.urlopen
+    if current is not _DEFAULT_URLOPEN:
+        return current(req, timeout=timeout)
+    return _opener.open(req, timeout=timeout)
 
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_failure_sink",
@@ -676,7 +692,7 @@ def request(
         return True
 
     def open_and_read(request_timeout: float) -> tuple[int, str]:
-        with _opener.open(req, timeout=request_timeout) as response:
+        with _open_request(req, request_timeout) as response:
             return response.status, response.read().decode('utf-8')
 
     def open_and_read_before_deadline(
