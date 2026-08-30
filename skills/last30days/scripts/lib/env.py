@@ -582,6 +582,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # resolved above via openai_auth).
         ('GROQ_API_KEY', None),
         ('LAST30DAYS_YT_SUB_LANGS', 'en,es,pt'),
+        # youtube_yt reads this lazily from os.environ; default android is
+        # applied there when the key is absent. Empty disables.
+        ('LAST30DAYS_YT_PLAYER_CLIENT', None),
         ('LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT', None),
         ('LAST30DAYS_YT_SEARCH_TIMEOUT', None),
         ('GITHUB_TOKEN', None),
@@ -603,9 +606,16 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         'LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT',
         'LAST30DAYS_YT_SEARCH_TIMEOUT',
         'LAST30DAYS_REDDIT_KEYLESS_RATE',
+        'LAST30DAYS_YT_PLAYER_CLIENT',
     ):
-        if config.get(key):
-            os.environ.setdefault(key, config[key])
+        value = config.get(key)
+        # Empty LAST30DAYS_YT_PLAYER_CLIENT is a valid disable; other knobs
+        # treat empty as unset and keep their code defaults.
+        if key == 'LAST30DAYS_YT_PLAYER_CLIENT':
+            if value is not None:
+                os.environ.setdefault(key, value)
+        elif value:
+            os.environ.setdefault(key, value)
 
     # Backward-compat: ScrapeCreators' own examples and tutorials use the
     # SCRAPE_CREATORS_API_KEY spelling (with underscore between SCRAPE and

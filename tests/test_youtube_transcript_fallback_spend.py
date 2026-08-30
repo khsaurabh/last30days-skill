@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -11,7 +12,9 @@ def test_youtube_tuning_loaded_from_env_file_reaches_lazy_readers(
 ) -> None:
     config_file = tmp_path / ".env"
     config_file.write_text(
-        "LAST30DAYS_YT_SUB_LANGS=en\nLAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT=25\n",
+        "LAST30DAYS_YT_SUB_LANGS=en\n"
+        "LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT=25\n"
+        "LAST30DAYS_YT_PLAYER_CLIENT=tv_embedded\n",
         encoding="utf-8",
     )
     config_file.chmod(0o600)
@@ -20,6 +23,7 @@ def test_youtube_tuning_loaded_from_env_file_reaches_lazy_readers(
     monkeypatch.setenv("LAST30DAYS_CONFIG_DIR", str(tmp_path))
     monkeypatch.delenv("LAST30DAYS_YT_SUB_LANGS", raising=False)
     monkeypatch.delenv("LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT", raising=False)
+    monkeypatch.delenv("LAST30DAYS_YT_PLAYER_CLIENT", raising=False)
     monkeypatch.chdir(tmp_path)
 
     with (
@@ -30,8 +34,15 @@ def test_youtube_tuning_loaded_from_env_file_reaches_lazy_readers(
 
     assert config["LAST30DAYS_YT_SUB_LANGS"] == "en"
     assert config["LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT"] == "25"
+    assert config["LAST30DAYS_YT_PLAYER_CLIENT"] == "tv_embedded"
     assert youtube_yt._ytdlp_sub_langs() == "en"
     assert youtube_yt._transcript_fast_timeout() == 25.0
+    assert youtube_yt._ytdlp_player_client() == "tv_embedded"
+    # get_config exports into os.environ; drop the leak so later lazy readers
+    # still see process defaults.
+    os.environ.pop("LAST30DAYS_YT_PLAYER_CLIENT", None)
+    os.environ.pop("LAST30DAYS_YT_SUB_LANGS", None)
+    os.environ.pop("LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT", None)
 
 
 @pytest.mark.parametrize(
