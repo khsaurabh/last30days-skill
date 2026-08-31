@@ -45,6 +45,34 @@ def test_youtube_tuning_loaded_from_env_file_reaches_lazy_readers(
     os.environ.pop("LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT", None)
 
 
+def test_empty_player_client_in_env_file_disables_android_default(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config_file = tmp_path / ".env"
+    config_file.write_text("LAST30DAYS_YT_PLAYER_CLIENT=\n", encoding="utf-8")
+    config_file.chmod(0o600)
+    monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(env, "CONFIG_FILE", config_file)
+    monkeypatch.setenv("LAST30DAYS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("LAST30DAYS_YT_PLAYER_CLIENT", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    with (
+        mock.patch.object(env, "_load_keychain", return_value={}),
+        mock.patch.object(env, "_load_pass", return_value={}),
+    ):
+        config = env.get_config()
+
+    assert config["LAST30DAYS_YT_PLAYER_CLIENT"] == ""
+    assert "LAST30DAYS_YT_PLAYER_CLIENT" in os.environ
+    assert os.environ["LAST30DAYS_YT_PLAYER_CLIENT"] == ""
+    assert youtube_yt._ytdlp_player_client() is None
+    cmd = ["yt-dlp", "ytsearch1:topic"]
+    assert youtube_yt._inject_youtube_player_client(cmd) == cmd
+    os.environ.pop("LAST30DAYS_YT_PLAYER_CLIENT", None)
+
+
 @pytest.mark.parametrize(
     "value",
     ["", "not-a-number", "0", "-1", "nan", "inf"],

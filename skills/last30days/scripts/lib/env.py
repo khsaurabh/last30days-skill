@@ -200,7 +200,9 @@ def load_env_file(path: Path) -> dict[str, str]:
             # Remove quotes if present
             if value and value[0] in ('"', "'") and value[-1] == value[0]:
                 value = value[1:-1]
-            if key and value:
+            # Empty LAST30DAYS_YT_PLAYER_CLIENT is a persisted disable; other
+            # keys still drop blanks so secrets cannot be set to "".
+            if key and (value or key == 'LAST30DAYS_YT_PLAYER_CLIENT'):
                 env.update({key: value})
     return env
 
@@ -591,7 +593,16 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     ]
 
     for key, default in keys:
-        config[key] = os.environ.get(key) or merged_env.get(key, default)
+        if key == 'LAST30DAYS_YT_PLAYER_CLIENT':
+            # Empty string is a valid disable; `or` would treat it as unset.
+            if key in os.environ:
+                config[key] = os.environ.get(key)
+            elif key in merged_env:
+                config[key] = merged_env[key]
+            else:
+                config[key] = default
+        else:
+            config[key] = os.environ.get(key) or merged_env.get(key, default)
 
     # Export debug flag to os.environ so log.py's lazy os.environ.get()
     # picks up .env values. setdefault ensures a shell-exported value is
