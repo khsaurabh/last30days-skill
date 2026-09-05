@@ -220,10 +220,20 @@ def test_creator_only_handles_preserves_x_provenance():
     exemption must survive the creator-only subtraction (Greptile re-review
     on f49c7bf)."""
     creators = pipeline._creator_first_party_by_source([], ["Foo"])
-    explicit = {"foo"}  # normalized --x-handle
-    supplemental = set()
-    creator_only = pipeline._creator_only_handles(creators, explicit, supplemental)
+    real_x = {"foo"}  # normalized --x-handle / @mention / Phase 2 discovery
+    creator_only = pipeline._creator_only_handles(creators, real_x)
     assert creator_only == set(), "foo has X provenance and is not creator-only"
     creators = pipeline._creator_first_party_by_source([], ["bar"])
-    creator_only = pipeline._creator_only_handles(creators, explicit, supplemental)
+    creator_only = pipeline._creator_only_handles(creators, real_x)
     assert creator_only == {"bar"}, "bar was named only as an IG creator"
+
+
+def test_topic_token_alone_is_not_x_provenance():
+    """A creator handle that also appears as a plain topic token keeps no X
+    exemption: X provenance is real_x_handles only (Greptile re-review on
+    2a62aea). The pipeline passes real_x_handles as the provenance set, so a
+    topic-token-only handle lands in creator_only and out of x_floor_handles."""
+    creators = pipeline._creator_first_party_by_source([], ["linkuptv"])
+    # topic mention of "linkuptv" without an @ or X flag: not in real_x_handles
+    creator_only = pipeline._creator_only_handles(creators, {"someone_else"})
+    assert creator_only == {"linkuptv"}

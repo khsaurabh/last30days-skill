@@ -2586,14 +2586,11 @@ def run(
     # subject's own highest-signal posts). Built before fusion so the
     # per-author cap can give the topic's subject a higher allowance than an
     # incidental third-party account.
-    supplemental_norm = {
+    resolved_handles = explicit_first_party | {
         h.lstrip("@").strip().lower()
         for h in supplemental_handles
         if h and h.strip()
-    }
-    resolved_handles = explicit_first_party | supplemental_norm | {
-        h for handles in creator_first_party.values() for h in handles
-    }
+    } | {h for handles in creator_first_party.values() for h in handles}
     # resolved_handles feeds rerank/fusion, where the first-party marks only
     # resist demotion of items that already passed the inclusion floors and a
     # named account is treated as the subject across surfaces. The inclusion
@@ -2618,10 +2615,12 @@ def run(
     if real_x_handles:
         # IG/TikTok creator exemptions stay on their own platforms: a creator
         # handle must not exempt a same-name X account from this floor. Only
-        # creator-ONLY handles are subtracted - a handle also named via an X
-        # flag or topic mention keeps its explicit X exemption.
+        # creator-ONLY handles are subtracted, where X provenance means
+        # real_x_handles (explicit X flags, @mentions in the topic, Phase 2
+        # discovery) - a plain topic token or --github-user match is NOT X
+        # provenance and does not preserve the exemption.
         x_floor_handles = resolved_handles - _creator_only_handles(
-            creator_first_party, explicit_first_party, supplemental_norm
+            creator_first_party, real_x_handles
         )
         for key, stream in list(bundle.items_by_source_and_query.items()):
             if key[1] != "x" or not stream:
