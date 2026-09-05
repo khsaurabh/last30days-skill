@@ -11,7 +11,6 @@ fails, and no drop was logged.
 """
 
 import contextlib
-import inspect
 import io
 
 from lib import pipeline, schema, signals
@@ -101,21 +100,57 @@ def test_unnamed_creator_content_still_pruned():
     assert all(item.author != "linkuptv" for item in kept)
 
 
-def test_creator_flags_feed_explicit_first_party():
-    """The wiring this whole file depends on: --ig-creators and --creators
-    handles must be part of the explicit_first_party set built before
-    retrieval, or the exemption never sees them."""
-    src = inspect.getsource(pipeline)
-    start = src.index("explicit_first_party = {")
-    block = src[start:start + 900]
-    assert "ig_creators" in block, (
-        "--ig-creators handles never reach first_party_handles, so creator "
-        "reels are pruned as third-party noise"
+def test_creator_handles_scoped_to_their_platform():
+    """The wiring this whole file depends on: creator flags must produce the
+    platform-scoped exemption map the prunes receive, normalized the same way
+    item authors are."""
+    scoped = pipeline._creator_first_party_by_source(
+        ["@MixtapeMadness", "  "], ["LinkUpTV"]
     )
-    assert "tiktok_creators" in block, (
-        "TikTok --creators handles have the identical gap and must land in "
-        "the same set"
+    assert scoped == {
+        "instagram": {"linkuptv"},
+        "tiktok": {"mixtapemadness"},
+    }
+
+
+def test_ig_creator_does_not_exempt_same_name_tiktok_account():
+    """An account named via --ig-creators is an Instagram account; a same-name
+    TikTok account is a different person and gets no exemption."""
+    items = _annotate([
+        _shortform_item("tt-same-name", "tiktok", "linkuptv", 0.0,
+                        {"views": 800, "likes": 30, "comments": 2}),
+        _shortform_item("x-hit", "x", "someone", 0.4,
+                        {"likes": 90, "reposts": 9}),
+    ])
+    kept = signals.prune_low_relevance(
+        items, first_party_by_source={"instagram": {"linkuptv"}}
     )
+    assert "tt-same-name" not in [item.item_id for item in kept]
+
+
+def test_scoped_exemption_keeps_creator_on_own_platform():
+    items = _annotate(_mixed_ig_batch())
+    kept = signals.prune_low_relevance(
+        items, first_party_by_source={"instagram": {"linkuptv"}}
+    )
+    ids = [item.item_id for item in kept]
+    assert "ig-creator" in ids
+    assert "ig-random" not in ids
+
+
+def test_deferred_x_floor_ignores_creator_only_handles():
+    """The deferred X prune receives resolved_handles minus the creator sets:
+    an X account that merely shares a creator's handle still faces the floor."""
+    items = _annotate([
+        _shortform_item("x-same-name", "x", "linkuptv", 0.0, {"likes": 0}),
+        _shortform_item("x-hit", "x", "someone", 0.4, {"likes": 90, "reposts": 9}),
+    ])
+    kept = signals.prune_low_relevance(
+        items,
+        first_party_handles=set(),  # creator handles were subtracted out
+        first_party_by_source={"instagram": {"linkuptv"}},
+    )
+    assert "x-same-name" not in [item.item_id for item in kept]
 
 
 def _raw_ig(item_id, author, text, views):

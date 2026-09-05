@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 import math
 import queue
 import re
@@ -2171,17 +2171,18 @@ def run(
     # the evidence loss this change exists to prevent.
     explicit_first_party = {
         h.lstrip("@").strip().lower()
-        for h in (
-            [x_handle, github_user, *(x_related or [])]
-            # Creator accounts named via --ig-creators / --creators carry the
-            # same explicit intent: the run is searching those accounts, and a
-            # creator's caption rarely repeats the topic's literal tokens, so
-            # without this the relevance floor prunes them as third-party
-            # noise (issue #1101: 36 creator reels fetched, 0 reported).
-            + [*(tiktok_creators or []), *(ig_creators or [])]
-        )
+        for h in ([x_handle, github_user, *(x_related or [])])
         if h and h.strip()
     }
+    # Creator accounts named via --ig-creators / --creators carry the same
+    # explicit intent: the run is searching those accounts, and a creator's
+    # caption rarely repeats the topic's literal tokens, so without an
+    # exemption the relevance floor prunes them as third-party noise (issue
+    # #1101: 36 creator reels fetched, 0 reported). The exemption is scoped
+    # per platform, NOT merged into the global set: each flag names accounts
+    # on one platform, and an unrelated same-name account elsewhere must not
+    # bypass the floors.
+    creator_first_party = _creator_first_party_by_source(tiktok_creators, ig_creators)
     # Real X handles: --x-handle, --x-related, or @mentions in the topic. These
     # determine whether the deferred X floor applies. Topic words like "peter"
     # are NOT real handles and should not trigger the floor — when no real
@@ -2490,6 +2491,7 @@ def run(
                 freshness_mode=plan.freshness_mode,
                 ranking_query=subquery.ranking_query,
                 first_party_handles=explicit_first_party,
+                first_party_by_source=creator_first_party,
                 # X defers its relevance floor until resolved_handles exists.
                 # Everything else prunes here as before.
                 defer_relevance_prune=(source == "x"),
@@ -2548,6 +2550,7 @@ def run(
         tiktok_creators=tiktok_creators,
         ig_creators=ig_creators,
         first_party_handles=explicit_first_party,
+        first_party_by_source=creator_first_party,
         run_started=run_started,
     )
 
@@ -2587,7 +2590,13 @@ def run(
         h.lstrip("@").strip().lower()
         for h in supplemental_handles
         if h and h.strip()
-    }
+    } | {h for handles in creator_first_party.values() for h in handles}
+    # resolved_handles feeds rerank/fusion, where the first-party marks only
+    # resist demotion of items that already passed the inclusion floors and a
+    # named account is treated as the subject across surfaces. The inclusion
+    # gate (prune_low_relevance) instead gets the platform-scoped
+    # creator_first_party map so a cross-platform name collision cannot
+    # bypass the floors.
     # Real X handles from explicit flags, @mentions in topic, or Phase 2 discovery.
     # When no real handle is identified, skip the X floor entirely — a noisier
     # report beats losing the subject's evidence. Topic tokens like "peter" are
@@ -2604,20 +2613,28 @@ def run(
     # shape it always has. Only applied when we have real X handles — topic
     # tokens alone cannot identify the subject.
     if real_x_handles:
+        # IG/TikTok creator exemptions stay on their own platforms: a creator
+        # handle must not exempt a same-name X account from this floor.
+        creator_flat = {h for handles in creator_first_party.values() for h in handles}
+        x_floor_handles = resolved_handles - creator_flat
         for key, stream in list(bundle.items_by_source_and_query.items()):
             if key[1] != "x" or not stream:
                 continue
             pruned = signals.prune_low_relevance(
-                stream, first_party_handles=resolved_handles
+                stream,
+                first_party_handles=x_floor_handles,
+                first_party_by_source=creator_first_party,
             )
-            _log_prune_drop("x", len(stream), len(pruned))
+            _log_prune_drop("x", len(stream), len(pruned), scope="per-query stream")
             bundle.items_by_source_and_query[key] = pruned
         if bundle.items_by_source.get("x"):
             x_stream = bundle.items_by_source["x"]
             pruned = signals.prune_low_relevance(
-                x_stream, first_party_handles=resolved_handles
+                x_stream,
+                first_party_handles=x_floor_handles,
+                first_party_by_source=creator_first_party,
             )
-            _log_prune_drop("x", len(x_stream), len(pruned))
+            _log_prune_drop("x", len(x_stream), len(pruned), scope="merged stream")
             bundle.items_by_source["x"] = pruned
 
     candidates = weighted_rrf(
@@ -2985,7 +3002,32 @@ def _apply_reddit_stream_keepers(
     return kept[:limit]
 
 
-def _log_prune_drop(source: str, before: int, after: int) -> None:
+
+def _creator_first_party_by_source(
+    tiktok_creators: Iterable[str] | None,
+    ig_creators: Iterable[str] | None,
+) -> dict[str, set[str]]:
+    """Platform-scoped creator handles for the relevance prune.
+
+    --ig-creators names Instagram accounts and --creators names TikTok
+    accounts; each exemption applies only on its own platform. Merging both
+    into one global handle set would let an unrelated same-name account on
+    another platform bypass the relevance and engagement floors.
+    """
+
+    def _norm(handles: Iterable[str] | None) -> set[str]:
+        return {
+            h.lstrip("@").strip().lower()
+            for h in (handles or [])
+            if h and h.strip()
+        }
+
+    return {"instagram": _norm(ig_creators), "tiktok": _norm(tiktok_creators)}
+
+
+def _log_prune_drop(
+    source: str, before: int, after: int, scope: str | None = None
+) -> None:
     """Log when the relevance prune removes items from a stream.
 
     The prune is silent by design inside ``signals`` (a pure function), but a
@@ -2998,10 +3040,11 @@ def _log_prune_drop(source: str, before: int, after: int) -> None:
     dropped = before - after
     if dropped <= 0:
         return
+    scope_note = f" ({scope})" if scope else ""
     log.source_log(
         render.SOURCE_LABELS.get(source, source.capitalize()),
         f"relevance prune dropped {dropped} of {before} items below the "
-        "relevance/engagement floor",
+        f"relevance/engagement floor{scope_note}",
         tty_only=False,
     )
 
@@ -3014,6 +3057,7 @@ def _normalize_score_dedupe(
     freshness_mode: str,
     ranking_query: str,
     first_party_handles: Iterable[str] | None = None,
+    first_party_by_source: Mapping[str, Iterable[str]] | None = None,
     defer_relevance_prune: bool = False,
 ) -> list[schema.SourceItem]:
     """Normalize, annotate, prune, dedupe, and extract snippets for a batch of raw items.
@@ -3060,7 +3104,9 @@ def _normalize_score_dedupe(
             floor_handles |= _batch_subject_handles(raw_items)
         pre_prune_count = len(normalized)
         normalized = signals.prune_low_relevance(
-            normalized, first_party_handles=floor_handles
+            normalized,
+            first_party_handles=floor_handles,
+            first_party_by_source=first_party_by_source,
         )
         _log_prune_drop(source, pre_prune_count, len(normalized))
     normalized = dedupe.dedupe_items(normalized)
@@ -4045,6 +4091,7 @@ def _retry_thin_sources(
     tiktok_creators: list[str] | None = None,
     ig_creators: list[str] | None = None,
     first_party_handles: Iterable[str] | None = None,
+    first_party_by_source: Mapping[str, Iterable[str]] | None = None,
     run_started: float | None = None,
 ) -> None:
     """Retry sources with thin results using simplified core subject query."""
@@ -4129,6 +4176,7 @@ def _retry_thin_sources(
             freshness_mode=plan.freshness_mode,
             ranking_query=retry_subquery.ranking_query,
             first_party_handles=first_party_handles,
+            first_party_by_source=first_party_by_source,
             # Match Phase 1: X defers its relevance floor until the run has
             # resolved handles. Applying it here would discard a subject-
             # authored post that does not repeat the subject's name, and the
