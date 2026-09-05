@@ -215,3 +215,15 @@ def test_all_weak_rescue_is_not_logged_as_a_drop():
     kept, logs = _normalize_quietly(raw)
     assert len(kept) == 2, "the filtered-or-items rescue keeps weak sole batches"
     assert "prune" not in logs.lower()
+def test_creator_only_handles_preserves_x_provenance():
+    """--x-handle foo --ig-creators foo names the same person twice; the X
+    exemption must survive the creator-only subtraction (Greptile re-review
+    on f49c7bf)."""
+    creators = pipeline._creator_first_party_by_source([], ["Foo"])
+    explicit = {"foo"}  # normalized --x-handle
+    supplemental = set()
+    creator_only = pipeline._creator_only_handles(creators, explicit, supplemental)
+    assert creator_only == set(), "foo has X provenance and is not creator-only"
+    creators = pipeline._creator_first_party_by_source([], ["bar"])
+    creator_only = pipeline._creator_only_handles(creators, explicit, supplemental)
+    assert creator_only == {"bar"}, "bar was named only as an IG creator"

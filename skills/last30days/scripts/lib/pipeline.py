@@ -2586,11 +2586,14 @@ def run(
     # subject's own highest-signal posts). Built before fusion so the
     # per-author cap can give the topic's subject a higher allowance than an
     # incidental third-party account.
-    resolved_handles = explicit_first_party | {
+    supplemental_norm = {
         h.lstrip("@").strip().lower()
         for h in supplemental_handles
         if h and h.strip()
-    } | {h for handles in creator_first_party.values() for h in handles}
+    }
+    resolved_handles = explicit_first_party | supplemental_norm | {
+        h for handles in creator_first_party.values() for h in handles
+    }
     # resolved_handles feeds rerank/fusion, where the first-party marks only
     # resist demotion of items that already passed the inclusion floors and a
     # named account is treated as the subject across surfaces. The inclusion
@@ -2614,9 +2617,12 @@ def run(
     # tokens alone cannot identify the subject.
     if real_x_handles:
         # IG/TikTok creator exemptions stay on their own platforms: a creator
-        # handle must not exempt a same-name X account from this floor.
-        creator_flat = {h for handles in creator_first_party.values() for h in handles}
-        x_floor_handles = resolved_handles - creator_flat
+        # handle must not exempt a same-name X account from this floor. Only
+        # creator-ONLY handles are subtracted - a handle also named via an X
+        # flag or topic mention keeps its explicit X exemption.
+        x_floor_handles = resolved_handles - _creator_only_handles(
+            creator_first_party, explicit_first_party, supplemental_norm
+        )
         for key, stream in list(bundle.items_by_source_and_query.items()):
             if key[1] != "x" or not stream:
                 continue
@@ -3023,6 +3029,25 @@ def _creator_first_party_by_source(
         }
 
     return {"instagram": _norm(ig_creators), "tiktok": _norm(tiktok_creators)}
+
+
+def _creator_only_handles(
+    creator_first_party: Mapping[str, set[str]],
+    *x_provenance_sets: Iterable[str],
+) -> set[str]:
+    """Creator handles that carry no X provenance.
+
+    A handle named ONLY via --ig-creators / --creators must not exempt a
+    same-name X account from the deferred X floor. But the same person is
+    often named on both surfaces (--x-handle foo --ig-creators foo): the
+    normalized sets collapse that to one string, so subtracting the whole
+    creator set would strip the explicitly requested X exemption too. The
+    subtraction therefore covers only handles absent from every
+    X-provenance set (explicit flags, topic mentions, Phase 2 discovery).
+    """
+    creator_flat = {h for handles in creator_first_party.values() for h in handles}
+    x_provenance = {h for handles in x_provenance_sets for h in handles}
+    return creator_flat - x_provenance
 
 
 def _log_prune_drop(
