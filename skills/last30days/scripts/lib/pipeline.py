@@ -78,6 +78,7 @@ from . import (
 )
 from .cluster import cluster_candidates
 from . import fusion
+from . import render
 from .fusion import collapse_duplicate_urls, weighted_rrf
 
 DISCOVERY_SOURCES = ("reddit", "hackernews", "digg", "x")
@@ -2170,7 +2171,15 @@ def run(
     # the evidence loss this change exists to prevent.
     explicit_first_party = {
         h.lstrip("@").strip().lower()
-        for h in ([x_handle, github_user, *(x_related or [])])
+        for h in (
+            [x_handle, github_user, *(x_related or [])]
+            # Creator accounts named via --ig-creators / --creators carry the
+            # same explicit intent: the run is searching those accounts, and a
+            # creator's caption rarely repeats the topic's literal tokens, so
+            # without this the relevance floor prunes them as third-party
+            # noise (issue #1101: 36 creator reels fetched, 0 reported).
+            + [*(tiktok_creators or []), *(ig_creators or [])]
+        )
         if h and h.strip()
     }
     # Real X handles: --x-handle, --x-related, or @mentions in the topic. These
@@ -2598,13 +2607,18 @@ def run(
         for key, stream in list(bundle.items_by_source_and_query.items()):
             if key[1] != "x" or not stream:
                 continue
-            bundle.items_by_source_and_query[key] = signals.prune_low_relevance(
+            pruned = signals.prune_low_relevance(
                 stream, first_party_handles=resolved_handles
             )
+            _log_prune_drop("x", len(stream), len(pruned))
+            bundle.items_by_source_and_query[key] = pruned
         if bundle.items_by_source.get("x"):
-            bundle.items_by_source["x"] = signals.prune_low_relevance(
-                bundle.items_by_source["x"], first_party_handles=resolved_handles
+            x_stream = bundle.items_by_source["x"]
+            pruned = signals.prune_low_relevance(
+                x_stream, first_party_handles=resolved_handles
             )
+            _log_prune_drop("x", len(x_stream), len(pruned))
+            bundle.items_by_source["x"] = pruned
 
     candidates = weighted_rrf(
         bundle.items_by_source_and_query,
@@ -2971,6 +2985,27 @@ def _apply_reddit_stream_keepers(
     return kept[:limit]
 
 
+def _log_prune_drop(source: str, before: int, after: int) -> None:
+    """Log when the relevance prune removes items from a stream.
+
+    The prune is silent by design inside ``signals`` (a pure function), but a
+    silent drop is invisible to the user: issue #1101 fetched 36 creator reels
+    and reported zero with no line explaining why. Log the count and the reason
+    class here, next to the other per-stream retrieval logs. The all-weak
+    ``filtered or items`` rescue keeps the originals, so before == after and
+    nothing is logged - a rescue is not a drop.
+    """
+    dropped = before - after
+    if dropped <= 0:
+        return
+    log.source_log(
+        render.SOURCE_LABELS.get(source, source.capitalize()),
+        f"relevance prune dropped {dropped} of {before} items below the "
+        "relevance/engagement floor",
+        tty_only=False,
+    )
+
+
 def _normalize_score_dedupe(
     source: str,
     raw_items: list[dict],
@@ -3023,9 +3058,11 @@ def _normalize_score_dedupe(
             # case where the handle never appears in the topic at all
             # ("Peter Steinberger" -> @steipete).
             floor_handles |= _batch_subject_handles(raw_items)
+        pre_prune_count = len(normalized)
         normalized = signals.prune_low_relevance(
             normalized, first_party_handles=floor_handles
         )
+        _log_prune_drop(source, pre_prune_count, len(normalized))
     normalized = dedupe.dedupe_items(normalized)
     for item in normalized:
         item.snippet = snippet.extract_best_snippet(item, prepared_query)
